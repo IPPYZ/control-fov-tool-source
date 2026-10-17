@@ -6,8 +6,12 @@ $compilerCandidates = @(
 )
 $compiler = $compilerCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
 if (-not $compiler) { throw 'Could not find the .NET Framework C# compiler (csc.exe).' }
-$automationAssembly = Join-Path $PSHOME 'System.Management.Automation.dll'
-if (-not (Test-Path -LiteralPath $automationAssembly)) { throw "Could not find Windows PowerShell assembly: $automationAssembly" }
+$automationGac = Join-Path $env:WINDIR 'Microsoft.NET\assembly\GAC_MSIL\System.Management.Automation'
+$automationAssembly = Get-ChildItem -LiteralPath $automationGac -Filter 'System.Management.Automation.dll' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
+if (-not $automationAssembly) {
+    $automationAssembly = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\System.Management.Automation.dll'
+}
+if (-not (Test-Path -LiteralPath $automationAssembly)) { throw 'Could not find the Windows PowerShell 5.1 assembly in the .NET GAC or Windows PowerShell folder.' }
 $scriptFile = Join-Path $sourceDir 'Control-FOV-Tool.ps1'
 $launcherFile = Join-Path $sourceDir 'ControlFOVLauncher.cs'
 $iconFile = Join-Path $sourceDir 'ControlFOV.ico'

@@ -119,12 +119,18 @@ public static class ControlFovMemory {
 }
 '@
 
-$script:gameDir = 'D:\Steam\steamapps\common\Control'
-$script:iniPath = Join-Path $script:gameDir 'renderer.ini'
 $script:prefsPath = Join-Path $env:LOCALAPPDATA 'ControlFOVTool\settings.json'
 $script:prefsDir = Split-Path $script:prefsPath
 if (!(Test-Path $script:prefsDir)) { New-Item -ItemType Directory -Path $script:prefsDir -Force | Out-Null }
 $script:prefs = if (Test-Path $script:prefsPath) { try { Get-Content $script:prefsPath -Raw | ConvertFrom-Json } catch { $null } } else { $null }
+$script:gameDir = [string]$script:prefs.GameDir
+if ($script:gameDir -and (Test-Path -LiteralPath $script:gameDir -PathType Container)) {
+    $script:iniPath = Join-Path $script:gameDir 'renderer.ini'
+} else {
+    $script:gameDir = ''
+    $script:iniPath = ''
+}
+$script:gamePathPid = 0
 $script:languageOptions = [ordered]@{
     en='English'; ar='العربية'; es='Español'; tr='Türkçe'; 'zh-CN'='简体中文'; fr='Français'; de='Deutsch'; pt='Português'; ja='日本語'; ko='한국어'; ru='Русский'; hi='हिन्दी'
 }
@@ -142,7 +148,7 @@ $script:hotkeys = [ordered]@{
     Disable = if ($script:prefs.Disable) { [string]$script:prefs.Disable } else { 'F3' }
 }
 $script:fov = if ($script:prefs.Fov -and [double]$script:prefs.Fov -ge 0.50 -and [double]$script:prefs.Fov -le 2.00) { [double]$script:prefs.Fov } else { 1.0 }
-if (Test-Path $script:iniPath) {
+if ($script:iniPath -and (Test-Path -LiteralPath $script:iniPath)) {
     $match = [regex]::Match([IO.File]::ReadAllText($script:iniPath), '"m_fFOVMultiplier"\s*:\s*([0-9]+(?:\.[0-9]+)?)')
     if ($match.Success -and !$script:prefs.Fov) { $script:fov = [double]::Parse($match.Groups[1].Value,[cultureinfo]::InvariantCulture) }
 }
@@ -438,7 +444,7 @@ function Save-Preferences {
     $script:hotkeys.Enable = [string]$script:EnableKey.Content
     $script:hotkeys.Disable = [string]$script:DisableKey.Content
     $script:step = [double]::Parse([string]$script:StepPicker.SelectedValue,[cultureinfo]::InvariantCulture)
-    $record = [ordered]@{ Language=$script:language; DarkMode=$script:darkMode; Enabled=$script:enabled; Fov=$script:fov; LastEnabledFov=$script:lastEnabledFov; Step=$script:step; Up=$script:hotkeys.Up; Down=$script:hotkeys.Down; Enable=$script:hotkeys.Enable; Disable=$script:hotkeys.Disable }
+    $record = [ordered]@{ Language=$script:language; DarkMode=$script:darkMode; Enabled=$script:enabled; Fov=$script:fov; LastEnabledFov=$script:lastEnabledFov; Step=$script:step; Up=$script:hotkeys.Up; Down=$script:hotkeys.Down; Enable=$script:hotkeys.Enable; Disable=$script:hotkeys.Disable; GameDir=$script:gameDir }
     $record | ConvertTo-Json | Set-Content -LiteralPath $script:prefsPath -Encoding UTF8
 }
 function Set-Status([string]$kind) {
@@ -460,6 +466,21 @@ function Is-ControlRunning {
 }
 function Get-ControlProcess {
     return Get-Process -Name @('Control_DX11','Control_DX12') -ErrorAction SilentlyContinue | Sort-Object StartTime -Descending | Select-Object -First 1
+}
+function Set-GamePathFromProcess($process) {
+    try {
+        $exePath = [string]$process.MainModule.FileName
+        if ([string]::IsNullOrWhiteSpace($exePath)) { return $false }
+        $directory = [IO.Path]::GetDirectoryName($exePath)
+        if ([string]::IsNullOrWhiteSpace($directory) -or !(Test-Path -LiteralPath $directory -PathType Container)) { return $false }
+        $script:gameDir = $directory
+        $script:iniPath = Join-Path $directory 'renderer.ini'
+        $script:gamePathPid = $process.Id
+        Save-Preferences
+        return $true
+    } catch {
+        return $false
+    }
 }
 function Close-LiveConnection {
     if ($script:liveHandle -ne [IntPtr]::Zero) {
@@ -494,6 +515,7 @@ function Update-LiveConnection {
         return
     }
     $script:controlPid = $process.Id
+    if ($script:gamePathPid -ne $process.Id) { [void](Set-GamePathFromProcess $process) }
     if ($script:liveFailedPid -eq $process.Id) { Set-Status 'memoryError'; return }
     if ($script:livePid -ne $process.Id -or $script:liveHandle -eq [IntPtr]::Zero) {
         if ($script:liveHandle -ne [IntPtr]::Zero) { Close-LiveConnection }
@@ -530,6 +552,7 @@ function Write-FovConfig([switch]$ForceFile) {
         if ($script:liveFieldAddress -eq 0) { Set-Status 'running' }
         return $true
     }
+    if ([string]::IsNullOrWhiteSpace($script:iniPath)) { Set-Status 'notRunning'; return $false }
     if (!(Test-Path -LiteralPath $script:iniPath)) { Set-Status 'missing'; return $false }
     $content = [IO.File]::ReadAllText($script:iniPath)
     $pattern = '("m_fFOVMultiplier"\s*:\s*)([0-9]+(?:\.[0-9]+)?)'
@@ -637,7 +660,7 @@ function Register-Hotkeys {
         $script:registeredIds += $row.Id
     }
     if ($registrationFailed) { Set-Status 'conflict'; return }
-    if (!(Test-Path -LiteralPath $script:iniPath)) { Set-Status 'missing' } else { Set-Status 'restart' }
+    if ([string]::IsNullOrWhiteSpace($script:iniPath) -or !(Test-Path -LiteralPath $script:iniPath)) { Set-Status 'notRunning' } else { Set-Status 'restart' }
 }
 function Update-HotkeyFocus {
     $shouldBeActive = ($script:controlPid -gt 0 -and [ControlFovHotkeys]::GetForegroundProcessId() -eq $script:controlPid)
